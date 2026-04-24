@@ -1,5 +1,7 @@
 # ChainPay for WooCommerce (developer README)
 
+> **Language**: English · [简体中文](./README.zh-CN.md)
+
 WooCommerce payment gateway plugin that accepts USDT/USDC via [ChainPay](https://chainpay.to). This file is for developers — the end-user install guide lives in [readme.txt](./readme.txt) (WP.org format).
 
 ## Layout
