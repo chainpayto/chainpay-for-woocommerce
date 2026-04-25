@@ -1,0 +1,81 @@
+name: Release Plugin Zip
+
+# 触发方式:
+#   1. push tag v* (自动) — 正式发版流程, 推一个 v0.1.x tag 即触发
+#   2. workflow_dispatch (手动) — 在 GitHub Actions 网页 "Run workflow", 输入已有 tag
+#
+# 行为:
+#   - checkout 指定 tag
+#   - 排除开发文件 (.wordpress-org/, .github/, README.zh-CN.md, *.zip 等)
+#   - 打包成 chainpay-for-woocommerce-<version>.zip (zip 顶层目录就是 plugin slug)
+#   - attach 到对应 tag 的 release; 若同名 asset 已存在, 会被覆盖
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach zip to (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag and version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG / version=$VERSION"
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Build plugin zip
+        run: |
+          set -eux
+          VERSION="${{ steps.meta.outputs.version }}"
+          STAGE="dist/chainpay-for-woocommerce"
+          mkdir -p "$STAGE"
+
+          # 把 plugin 文件拷进 staging, 排除仅开发用 / GH-only 资产
+          # 与 packages/wordpress-plugin/build-zip.js 的排除规则保持一致
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.gitignore' \
+            --exclude='.wordpress-org/' \
+            --exclude='dist/' \
+            --exclude='README.zh-CN.md' \
+            --exclude='*.zip' \
+            ./ "$STAGE/"
+
+          (cd dist && zip -r "chainpay-for-woocommerce-${VERSION}.zip" chainpay-for-woocommerce)
+          ls -la dist/
+
+      - name: Verify zip top-level directory
+        run: |
+          set -eux
+          unzip -l "dist/chainpay-for-woocommerce-${{ steps.meta.outputs.version }}.zip" | head -20
+
+      - name: Attach zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          files: dist/chainpay-for-woocommerce-*.zip
+          fail_on_unmatched_files: true
