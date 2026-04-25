@@ -124,9 +124,10 @@ class ChainPay_API_Client
         $json = json_decode($raw, true);
 
         if ($code < 200 || $code >= 300) {
+            // "HTTP 503" 是协议状态短语,不走 i18n,避免 translators 注释噪声
             $msg = is_array($json) && !empty($json['message'])
                 ? $json['message']
-                : sprintf(__('HTTP %d', 'chainpay-for-woocommerce'), $code);
+                : sprintf('HTTP %d', $code);
             return new WP_Error('chainpay_http_error', $msg, [
                 'status' => $code,
                 'body'   => $raw,

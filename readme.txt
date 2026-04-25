@@ -1,8 +1,8 @@
 === ChainPay for WooCommerce ===
 Contributors: chainpay
-Tags: woocommerce, cryptocurrency, payment gateway, usdt, usdc, crypto, bitcoin, tron, bsc, polygon
+Tags: woocommerce, payment gateway, cryptocurrency, usdt, usdc
 Requires at least: 5.8
-Tested up to: 6.6
+Tested up to: 6.9
 Requires PHP: 7.4
 Stable tag: 0.1.0
 License: GPLv2 or later
@@ -80,10 +80,7 @@ No. ChainPay only needs a valid email to sign up.
 
 == Screenshots ==
 
-1. Settings page inside WooCommerce admin.
-2. Checkout page with ChainPay as a payment option.
-3. Hosted ChainPay cashier page where the customer scans and pays.
-4. Webhook auto-updates the WooCommerce order to "Processing" once payment confirms.
+1. The hosted ChainPay checkout page — your customer scans the QR code and pays in USDT or USDC. EVM wallets (MetaMask, OKX, Trust Wallet, imToken) auto-fill the amount via EIP-681 deep link, no manual entry needed.
 
 == Changelog ==
 

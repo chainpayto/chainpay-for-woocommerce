@@ -159,10 +159,15 @@ class ChainPay_Webhook_Handler
         }
 
         if (!empty($order_no)) {
+            // 用 meta_query 替代 meta_key/meta_value,后者被 PluginCheck 标为 slow query
             $orders = wc_get_orders([
                 'limit'      => 1,
-                'meta_key'   => '_chainpay_order_no',
-                'meta_value' => sanitize_text_field($order_no),
+                'meta_query' => [
+                    [
+                        'key'   => '_chainpay_order_no',
+                        'value' => sanitize_text_field($order_no),
+                    ],
+                ],
             ]);
             if (!empty($orders)) {
                 return $orders[0];

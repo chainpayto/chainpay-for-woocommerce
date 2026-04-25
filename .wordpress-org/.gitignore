@@ -1,0 +1,6 @@
+# chrome headless 渲染时生成的中间 HTML
+.tmp/
+
+# icon 渲染中间产物 (512x512 → 降采样到 256/128 后即删,
+# 但脚本异常时可能残留)
+icon-512-tmp.png

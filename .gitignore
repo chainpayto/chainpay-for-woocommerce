@@ -1,2 +1,5 @@
-
 .commit-msg.tmp
+
+# .wordpress-org build intermediates
+.wordpress-org/.tmp/
+.wordpress-org/icon-512-tmp.png

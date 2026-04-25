@@ -6,9 +6,9 @@
  * Version:           0.1.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
- * Tested up to:      6.6
+ * Tested up to:      6.9
  * WC requires at least: 6.0
- * WC tested up to:   9.2
+ * WC tested up to:   10.7
  * Author:            ChainPay
  * Author URI:        https://chainpay.to
  * License:           GPL-2.0-or-later
@@ -34,11 +34,8 @@ define('CHAINPAY_WC_PLUGIN_URL', plugin_dir_url(__FILE__));
 add_action('plugins_loaded', 'chainpay_wc_init', 11);
 function chainpay_wc_init()
 {
-    load_plugin_textdomain(
-        'chainpay-for-woocommerce',
-        false,
-        dirname(plugin_basename(__FILE__)) . '/languages/'
-    );
+    // 不再手动 load_plugin_textdomain():WP 4.6+ 会按 plugin slug 自动加载 .mo,
+    // 手动调用反而被 Plugin Check 警告 (DiscouragedFunctions.load_plugin_textdomainFound)。
 
     if (!class_exists('WooCommerce')) {
         add_action('admin_notices', 'chainpay_wc_missing_wc_notice');
