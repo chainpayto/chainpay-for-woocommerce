@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       ChainPay for WooCommerce
  * Plugin URI:        https://chainpay.to/integrations/wordpress
- * Description:       Accept USDT / USDC crypto payments on your WooCommerce store via ChainPay. TRON, BSC, Polygon supported. No KYC required.
- * Version:           0.1.0
+ * Description:       Accept USDT / USDC crypto payments on your WooCommerce store via ChainPay. TRON, BSC, Polygon supported. No KYC required. Built-in sandbox + real-chain 0-fee testing.
+ * Version:           0.2.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Tested up to:      6.9
@@ -23,7 +23,7 @@ if (!defined('ABSPATH')) {
     exit; // No direct access
 }
 
-define('CHAINPAY_WC_VERSION', '0.1.0');
+define('CHAINPAY_WC_VERSION', '0.2.0');
 define('CHAINPAY_WC_PLUGIN_FILE', __FILE__);
 define('CHAINPAY_WC_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('CHAINPAY_WC_PLUGIN_URL', plugin_dir_url(__FILE__));
@@ -45,11 +45,61 @@ function chainpay_wc_init()
     require_once CHAINPAY_WC_PLUGIN_DIR . 'includes/class-chainpay-api-client.php';
     require_once CHAINPAY_WC_PLUGIN_DIR . 'includes/class-chainpay-webhook-handler.php';
     require_once CHAINPAY_WC_PLUGIN_DIR . 'includes/class-wc-gateway-chainpay.php';
+    require_once CHAINPAY_WC_PLUGIN_DIR . 'includes/class-chainpay-test-runner.php';
 
     add_filter('woocommerce_payment_gateways', 'chainpay_wc_add_gateway');
 
     // Webhook 挂在 WooCommerce API 端点，路径：/?wc-api=chainpay_webhook
     new ChainPay_Webhook_Handler();
+
+    // 集成自检 (admin only) — 见 includes/class-chainpay-test-runner.php
+    if (is_admin()) {
+        new ChainPay_Test_Runner();
+    }
+}
+
+/**
+ * 仅在 ChainPay 网关设置页加载 admin-test.js
+ * 路径: /wp-admin/admin.php?page=wc-settings&tab=checkout&section=chainpay
+ */
+add_action('admin_enqueue_scripts', 'chainpay_wc_admin_assets');
+function chainpay_wc_admin_assets($hook)
+{
+    // WC settings 页 hook 在不同 WC 版本叫法略有差异, 用 GET 兜底判断
+    // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- 仅读 admin URL 参数判断当前页, 不写入
+    $section = isset($_GET['section']) ? sanitize_key(wp_unslash($_GET['section'])) : '';
+    // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+    $tab     = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : '';
+    if ('chainpay' !== $section || 'checkout' !== $tab) {
+        return;
+    }
+
+    wp_enqueue_script(
+        'chainpay-admin-test',
+        CHAINPAY_WC_PLUGIN_URL . 'assets/js/admin-test.js',
+        ['jquery'],
+        CHAINPAY_WC_VERSION,
+        true
+    );
+    wp_localize_script('chainpay-admin-test', 'chainpayTest', [
+        'ajaxUrl' => admin_url('admin-ajax.php'),
+        'nonce'   => wp_create_nonce(ChainPay_Test_Runner::NONCE_ACTION),
+        'i18n'    => [
+            'Creating sandbox order on ChainPay'                                      => __('Creating sandbox order on ChainPay…', 'chainpay-for-woocommerce'),
+            'Sandbox order created'                                                   => __('Sandbox order created', 'chainpay-for-woocommerce'),
+            'Failed to create sandbox order'                                          => __('Failed to create sandbox order', 'chainpay-for-woocommerce'),
+            'Triggering simulate-paid'                                                => __('Triggering simulate-paid…', 'chainpay-for-woocommerce'),
+            'simulate-paid OK, ChainPay queued the webhook'                           => __('simulate-paid OK, ChainPay queued the webhook', 'chainpay-for-woocommerce'),
+            'Failed to simulate paid'                                                 => __('Failed to simulate paid', 'chainpay-for-woocommerce'),
+            'Waiting for webhook to reach your site'                                  => __('Waiting for webhook to reach your site…', 'chainpay-for-woocommerce'),
+            'Webhook received and verified'                                           => __('Webhook received and verified', 'chainpay-for-woocommerce'),
+            'Server error checking webhook'                                           => __('Server error checking webhook', 'chainpay-for-woocommerce'),
+            'Webhook timeout — your site did NOT receive the callback within 36s. Common causes:' => __('Webhook timeout — your site did NOT receive the callback within 36s. Common causes:', 'chainpay-for-woocommerce'),
+            'Site is behind a firewall / NAT and not publicly reachable'              => __('Site is behind a firewall / NAT and not publicly reachable', 'chainpay-for-woocommerce'),
+            'Webhook secret mismatch (server returned 401, payload dropped)'          => __('Webhook secret mismatch (server returned 401, payload dropped)', 'chainpay-for-woocommerce'),
+            'home_url() returns an internal URL (e.g. localhost) — set Site Address to a public domain' => __('home_url() returns an internal URL (e.g. localhost) — set Site Address to a public domain', 'chainpay-for-woocommerce'),
+        ],
+    ]);
 }
 
 function chainpay_wc_add_gateway($gateways)

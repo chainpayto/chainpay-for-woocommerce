@@ -36,6 +36,8 @@ class WC_Gateway_ChainPay extends WC_Payment_Gateway
     public $preferred_token;
     /** @var bool */
     public $debug;
+    /** @var bool 仅当 api_key 是 cp_test_xxx 时才生效, 标识是否启用 live_test 真链 0 费 */
+    public $live_test_enabled;
 
     public function __construct()
     {
@@ -55,19 +57,64 @@ class WC_Gateway_ChainPay extends WC_Payment_Gateway
         $this->init_form_fields();
         $this->init_settings();
 
-        $this->title           = $this->get_option('title');
-        $this->description     = $this->get_option('description');
-        $this->enabled         = $this->get_option('enabled');
-        $this->base_url        = $this->get_option('base_url', 'https://api.chainpay.to');
-        $this->api_key         = $this->get_option('api_key');
-        $this->api_secret      = $this->get_option('api_secret');
-        $this->webhook_secret  = $this->get_option('webhook_secret');
-        $this->preferred_chain = $this->get_option('preferred_chain', 'TRON');
-        $this->preferred_token = $this->get_option('preferred_token', 'USDT');
-        $this->debug           = 'yes' === $this->get_option('debug', 'no');
+        $this->title             = $this->get_option('title');
+        $this->description       = $this->get_option('description');
+        $this->enabled           = $this->get_option('enabled');
+        $this->base_url          = $this->get_option('base_url', 'https://api.chainpay.to');
+        $this->api_key           = $this->get_option('api_key');
+        $this->api_secret        = $this->get_option('api_secret');
+        $this->webhook_secret    = $this->get_option('webhook_secret');
+        $this->preferred_chain   = $this->get_option('preferred_chain', 'TRON');
+        $this->preferred_token   = $this->get_option('preferred_token', 'USDT');
+        $this->debug             = 'yes' === $this->get_option('debug', 'no');
+        $this->live_test_enabled = 'yes' === $this->get_option('live_test_enabled', 'no');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
         add_action('woocommerce_api_chainpay_return', [$this, 'handle_return']); // 可选：用户付完回跳
+    }
+
+    /**
+     * 根据 api_key 前缀识别 key 模式.
+     *
+     * cp_live_xxx → live   (生产 key, 创建 live 订单, 正常手续费)
+     * cp_test_xxx → test   (测试 key, 默认创建 sandbox; 加 realChain=true 且 admin 已审批 → live_test)
+     * 其他 / 空    → unknown
+     *
+     * @return string 'live' | 'test' | 'unknown'
+     */
+    public function get_key_mode()
+    {
+        $key = (string) $this->api_key;
+        if ($key === '') {
+            return 'unknown';
+        }
+        if (0 === strpos($key, 'cp_live_')) {
+            return 'live';
+        }
+        if (0 === strpos($key, 'cp_test_')) {
+            return 'test';
+        }
+        return 'unknown';
+    }
+
+    /**
+     * 当前实际生效的订单模式 (创建订单时会传给后端, 决定走 live / sandbox / live_test).
+     *
+     * 决策表:
+     *   key=live                       → 'live'
+     *   key=test, live_test_enabled=ON → 'live_test' (实际是否生效仍取决于 admin 是否已审批该 key)
+     *   key=test, live_test_enabled=OFF → 'sandbox'
+     *   key=unknown                    → 'live' (兜底, 不阻塞已配置 key 但前缀不匹配的老用户)
+     *
+     * @return string 'live' | 'sandbox' | 'live_test'
+     */
+    public function get_effective_order_mode()
+    {
+        $mode = $this->get_key_mode();
+        if ('test' === $mode) {
+            return $this->live_test_enabled ? 'live_test' : 'sandbox';
+        }
+        return 'live';
     }
 
     public function init_form_fields()
@@ -175,7 +222,128 @@ class WC_Gateway_ChainPay extends WC_Payment_Gateway
                 'default'     => 'no',
                 'description' => __('Safe to enable temporarily during setup. Do not leave on in production.', 'chainpay-for-woocommerce'),
             ],
+
+            // ── Sandbox / Test integration (见 docs/SANDBOX_DESIGN.md) ──
+            'testing_section' => [
+                'title'       => __('Sandbox & test integration', 'chainpay-for-woocommerce'),
+                'type'        => 'title',
+                'description' => __(
+                    'Use a <code>cp_test_xxx</code> API key to test your store without spending real money. Requires saving the settings first.',
+                    'chainpay-for-woocommerce'
+                ),
+            ],
+            'mode_indicator' => [
+                'type'  => 'chainpay_mode_indicator',
+                'title' => __('Current mode', 'chainpay-for-woocommerce'),
+            ],
+            'live_test_enabled' => [
+                'title'       => __('Real-chain 0-fee test', 'chainpay-for-woocommerce'),
+                'type'        => 'checkbox',
+                'label'       => __('Use the real blockchain at zero fees (live_test mode)', 'chainpay-for-woocommerce'),
+                'default'     => 'no',
+                'description' => __(
+                    'Only effective when API Key starts with <code>cp_test_</code> AND the platform admin has approved your key. Caps: ≤5 USDT/order, ≤20 orders/day, ≤500 lifetime. Request approval in your <a href="https://chainpay.to/merchant/api-keys" target="_blank">ChainPay dashboard</a> after saving the key.',
+                    'chainpay-for-woocommerce'
+                ),
+            ],
+            'test_runner' => [
+                'type'  => 'chainpay_test_runner',
+                'title' => __('Run integration test', 'chainpay-for-woocommerce'),
+            ],
         ];
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 自定义 settings field renderer
+    // WC 通过命名约定 generate_<type>_html() 找到自定义类型的渲染方法.
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * 渲染当前模式徽章 (绿 LIVE / 紫 SANDBOX / 黄 LIVE TEST / 灰 UNKNOWN).
+     */
+    public function generate_chainpay_mode_indicator_html($key, $data)
+    {
+        $field_key = $this->get_field_key($key);
+        $title     = isset($data['title']) ? $data['title'] : '';
+        $key_mode  = $this->get_key_mode();
+        $eff_mode  = $this->get_effective_order_mode();
+
+        // 颜色 + 文案
+        $palette = [
+            'live'      => ['#10B981', '#ECFDF5', __('LIVE — real orders, real fees', 'chainpay-for-woocommerce')],
+            'sandbox'   => ['#7C3AED', '#F5F3FF', __('SANDBOX — off-chain test orders, no fees', 'chainpay-for-woocommerce')],
+            'live_test' => ['#B45309', '#FEF3C7', __('LIVE TEST — real chain, 0 fees, capped (admin approval required)', 'chainpay-for-woocommerce')],
+        ];
+        list($color, $bg, $hint) = $palette[$eff_mode];
+
+        $key_hint = '';
+        if ('unknown' === $key_mode && !empty($this->api_key)) {
+            $key_hint = __('Your API key does not start with <code>cp_live_</code> or <code>cp_test_</code>; orders will default to live mode.', 'chainpay-for-woocommerce');
+        } elseif ('' === $this->api_key) {
+            $key_hint = __('Save your API Key first to detect the mode.', 'chainpay-for-woocommerce');
+        }
+
+        ob_start();
+        ?>
+        <tr valign="top">
+            <th scope="row" class="titledesc">
+                <label for="<?php echo esc_attr($field_key); ?>"><?php echo esc_html($title); ?></label>
+            </th>
+            <td class="forminp">
+                <div style="display:inline-block;padding:6px 14px;border-radius:14px;background:<?php echo esc_attr($bg); ?>;color:<?php echo esc_attr($color); ?>;font-weight:700;letter-spacing:.5px;">
+                    <?php echo esc_html(strtoupper($eff_mode)); ?>
+                </div>
+                <p class="description" style="margin-top:8px"><?php echo esc_html($hint); ?></p>
+                <?php if ($key_hint) : ?>
+                    <p class="description" style="color:#B45309"><?php echo wp_kses_post($key_hint); ?></p>
+                <?php endif; ?>
+            </td>
+        </tr>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * 渲染「Run integration test」按钮 + 实时进度面板.
+     * JS 在 assets/js/admin-test.js 中, 通过 admin-ajax.php 与后台交互.
+     */
+    public function generate_chainpay_test_runner_html($key, $data)
+    {
+        $field_key = $this->get_field_key($key);
+        $title     = isset($data['title']) ? $data['title'] : '';
+        $eff_mode  = $this->get_effective_order_mode();
+        $key_mode  = $this->get_key_mode();
+        $can_run   = ('test' === $key_mode);
+
+        ob_start();
+        ?>
+        <tr valign="top">
+            <th scope="row" class="titledesc">
+                <label><?php echo esc_html($title); ?></label>
+            </th>
+            <td class="forminp">
+                <button type="button"
+                    class="button button-primary"
+                    id="chainpay-run-test"
+                    <?php disabled(!$can_run); ?>
+                    data-mode="<?php echo esc_attr($eff_mode); ?>">
+                    <?php esc_html_e('Run end-to-end test', 'chainpay-for-woocommerce'); ?>
+                </button>
+                <?php if (!$can_run) : ?>
+                    <p class="description" style="color:#B45309">
+                        <?php esc_html_e('Configure a cp_test_xxx API key to enable this button. Live keys cannot be used for self-test (would create real billable orders).', 'chainpay-for-woocommerce'); ?>
+                    </p>
+                <?php else : ?>
+                    <p class="description">
+                        <?php esc_html_e('Creates a sandbox order, simulates payment, and verifies that the webhook reaches your site. ~30 seconds.', 'chainpay-for-woocommerce'); ?>
+                    </p>
+                <?php endif; ?>
+
+                <div id="chainpay-test-results" style="margin-top:12px; max-width:700px;"></div>
+            </td>
+        </tr>
+        <?php
+        return ob_get_clean();
     }
 
     /**
@@ -203,6 +371,15 @@ class WC_Gateway_ChainPay extends WC_Payment_Gateway
             'cancel_url'        => $order->get_cancel_order_url_raw(),
         ];
 
+        // Sandbox/Test 集成 (见 docs/SANDBOX_DESIGN.md):
+        // - cp_live_xxx → 永远 live, 不传 realChain
+        // - cp_test_xxx + live_test_enabled=true → 真链 0 费 (需后端审批已通过)
+        // - cp_test_xxx + live_test_enabled=false → sandbox (不上链)
+        $eff_mode = $this->get_effective_order_mode();
+        if ('live_test' === $eff_mode) {
+            $body['realChain'] = true;
+        }
+
         $client = new ChainPay_API_Client($this->base_url, $this->api_key, $this->api_secret);
         $result = $client->create_order($body, $merchant_order_no);
 
@@ -229,15 +406,24 @@ class WC_Gateway_ChainPay extends WC_Payment_Gateway
             return ['result' => 'failure'];
         }
 
+        // 实际生效的订单模式以后端响应为准 (后端会按 key 类型 + realChain + 审批状态最终决定).
+        // 通常是 sandbox / live_test / live, 这里同步存到 WC 订单 meta 方便排查.
+        $resolved_mode = isset($result['order_mode']) ? sanitize_key($result['order_mode']) : $eff_mode;
+
         // 写入 meta + 订单备注，便于后台排查
         $order->update_meta_data('_chainpay_order_no', $order_no);
         $order->update_meta_data('_chainpay_checkout_url', $checkout_url);
+        $order->update_meta_data('_chainpay_order_mode', $resolved_mode);
         $order->set_payment_method($this->id);
         $order->set_payment_method_title($this->title);
-        $order->update_status(
-            'pending',
-            __('ChainPay order created, awaiting on-chain payment.', 'chainpay-for-woocommerce')
-        );
+
+        $note = __('ChainPay order created, awaiting on-chain payment.', 'chainpay-for-woocommerce');
+        if ('sandbox' === $resolved_mode) {
+            $note = __('[SANDBOX] ChainPay test order created (off-chain, no real funds will move).', 'chainpay-for-woocommerce');
+        } elseif ('live_test' === $resolved_mode) {
+            $note = __('[LIVE TEST] ChainPay real-chain 0-fee test order created. Caps apply.', 'chainpay-for-woocommerce');
+        }
+        $order->update_status('pending', $note);
         $order->save();
 
         return [

@@ -23,6 +23,12 @@ class ChainPay_Webhook_Handler
 {
     const TOLERANCE_SECONDS = 300; // 5 分钟
 
+    /**
+     * Transient key: 记录最近一次成功验签的 webhook (供「Run integration test」自检按钮用).
+     * 30 分钟自动过期, 比测试任务的轮询窗口长得多, 不会误报.
+     */
+    const LAST_WEBHOOK_TRANSIENT = 'chainpay_last_webhook';
+
     public function __construct()
     {
         add_action('woocommerce_api_chainpay_webhook', [$this, 'handle']);
@@ -88,6 +94,20 @@ class ChainPay_Webhook_Handler
             $this->respond(400, 'invalid_json');
             return;
         }
+
+        // 6. 记录「最近一次验签通过的 webhook」, 供 Run Test 自检按钮闭环检测
+        // 只存少量信息, 不存敏感字段, 也不入库 (transient = wp_options 临时项, 30min 过期)
+        set_transient(
+            self::LAST_WEBHOOK_TRANSIENT,
+            [
+                'order_no' => isset($payload['order_no']) ? (string) $payload['order_no'] : '',
+                'merchant_order_no' => isset($payload['merchant_order_no']) ? (string) $payload['merchant_order_no'] : '',
+                'event' => !empty($payload['event']) ? (string) $payload['event'] : (string) $event,
+                'order_mode' => isset($payload['order_mode']) ? (string) $payload['order_mode'] : '',
+                'received_at' => time(),
+            ],
+            30 * MINUTE_IN_SECONDS
+        );
 
         $result = $this->process_event($payload, $event);
         if (is_wp_error($result)) {

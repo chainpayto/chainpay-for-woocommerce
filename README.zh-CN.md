@@ -8,16 +8,19 @@
 
 ```
 chainpay-for-woocommerce/
-├── chainpay-for-woocommerce.php   ← 插件入口
+├── chainpay-for-woocommerce.php   ← 插件入口 + admin 资源加载
 ├── readme.txt                     ← WordPress.org 插件列表用
 ├── README.md                      ← 英文开发者说明
 ├── README.zh-CN.md                ← 本文件
 ├── includes/
-│   ├── class-chainpay-api-client.php      ← HMAC-SHA256 签名 HTTP 客户端
-│   ├── class-wc-gateway-chainpay.php      ← 支付网关类(继承 WC_Payment_Gateway) + 后台设置页
-│   └── class-chainpay-webhook-handler.php ← /?wc-api=chainpay_webhook 回调处理
+│   ├── class-chainpay-api-client.php      ← HMAC-SHA256 签名 HTTP 客户端 (含 simulate-* 辅助)
+│   ├── class-wc-gateway-chainpay.php      ← 支付网关类 + 后台设置页 + 模式徽章
+│   ├── class-chainpay-webhook-handler.php ← Webhook 回调处理 + 自检 transient 写入
+│   └── class-chainpay-test-runner.php     ← 「Run end-to-end test」按钮的 admin-ajax 路由
 ├── assets/
-│   └── chainpay-logo.svg                  ← 收银台左侧显示的网关图标(24px 宽)
+│   ├── chainpay-logo.svg                  ← 收银台左侧显示的网关图标(24px 宽)
+│   └── js/
+│       └── admin-test.js                  ← 自检按钮的 jQuery 进度面板 + webhook 轮询
 └── languages/
     ├── chainpay-for-woocommerce.pot       ← 翻译模板(用于生成新语言)
     └── chainpay-for-woocommerce-zh_CN.po  ← 简体中文翻译
@@ -58,6 +61,37 @@ chainpay-for-woocommerce/
 * **时间戳容差 5 分钟 + 幂等**
   Webhook 头部 `X-ChainPay-Timestamp` 与服务器时间差超过 300 秒会被拒,防重放攻击;同一订单的重复回调走幂等,不会重复发货。
 
+* **API key 前缀自动识别模式**
+  `cp_live_xxx` → live;`cp_test_xxx` 默认 sandbox,勾选「真链 0 费测试」+ admin 审批通过后 → live_test。**没有**全局测试开关(避免被忘记关掉导致生产事故),全部由 key 类型决定。
+
+## 集成测试 (Sandbox / 真链 0 费)
+
+完整设计见仓库根目录的 [`docs/SANDBOX_DESIGN.md`](../../../docs/SANDBOX_DESIGN.md)。
+
+插件支持平台所有三种模式:
+
+| 订单模式    | 触发条件                                                          | 上链 | 手续费 |
+|-------------|-------------------------------------------------------------------|------|--------|
+| `live`      | `api_key` 以 `cp_live_` 开头                                      | 是   | 标准   |
+| `sandbox`   | `api_key` 以 `cp_test_` 开头, **真链 0 费测试** 复选框未勾        | 否   | 0      |
+| `live_test` | `api_key` 以 `cp_test_` 开头, 复选框已勾, 且 admin 已审批         | 是   | 0      |
+
+`process_payment()` 通过 `get_effective_order_mode()` 决定要不要在创建订单 body 中加 `realChain: true`。
+
+### 一键自检流程
+
+`includes/class-chainpay-test-runner.php` 暴露 3 个 admin-ajax 接口(全部需 `manage_woocommerce` 权限 + nonce, 且**拒绝 cp_live_ key**, 防被滥用):
+
+```
+admin-ajax.php?action=chainpay_test_create     → POST /v1/orders          (强制 sandbox)
+admin-ajax.php?action=chainpay_test_simulate   → POST /v1/test/orders/:no/simulate-paid
+admin-ajax.php?action=chainpay_test_check      → 读 webhook handler 写入的 transient
+```
+
+Webhook handler 验签通过后会写 `chainpay_last_webhook` transient;check 接口对比 `merchant_order_no` 是否匹配本次自检, 加上 `received_at >= started_at` 的判断防止读到上一次自检的旧记录。
+
+商户体验:在设置页点「Run end-to-end test」→ 30 秒内看到 ✓✓✓ 表示整链路打通,可以切 `cp_live_xxx` 上线。
+
 ## 本地开发
 
 1. 用任意 WordPress 本地环境(LocalWP、Devilbox、docker-compose、宝塔都行)
@@ -96,7 +130,7 @@ wp-content/uploads/wc-logs/chainpay-*.log
 ```bash
 # 仓库根目录下
 cd packages/wordpress-plugin
-zip -r chainpay-for-woocommerce-0.1.0.zip chainpay-for-woocommerce \
+zip -r chainpay-for-woocommerce-0.2.0.zip chainpay-for-woocommerce \
   -x 'chainpay-for-woocommerce/.DS_Store' \
   -x 'chainpay-for-woocommerce/README.md' \
   -x 'chainpay-for-woocommerce/README.zh-CN.md'
@@ -106,7 +140,7 @@ Windows PowerShell 等价写法:
 
 ```powershell
 cd packages\wordpress-plugin
-Compress-Archive -Path chainpay-for-woocommerce -DestinationPath chainpay-for-woocommerce-0.1.0.zip -Force
+Compress-Archive -Path chainpay-for-woocommerce -DestinationPath chainpay-for-woocommerce-0.2.0.zip -Force
 ```
 
 > 说明:release zip 里通常不放两份 README.md(开发者文档),只保留 `readme.txt`(WordPress 后台要读这个文件显示插件信息)。

@@ -69,6 +69,41 @@ class ChainPay_API_Client
     }
 
     /**
+     * Sandbox: 模拟订单已支付 (仅对 cp_test_xxx 创建的 sandbox 订单生效)
+     * 见 docs/SANDBOX_DESIGN.md
+     *
+     * @param string $order_no ChainPay 订单号
+     * @param string|null $tx_hash 可选, 不传则后端自动生成
+     */
+    public function simulate_order_paid($order_no, $tx_hash = null)
+    {
+        $order_no = rawurlencode((string) $order_no);
+        $body = [];
+        if ($tx_hash) {
+            $body['tx_hash'] = $tx_hash;
+        }
+        return $this->request('POST', '/v1/test/orders/' . $order_no . '/simulate-paid', $body);
+    }
+
+    /**
+     * Sandbox: 模拟订单过期
+     */
+    public function simulate_order_expired($order_no)
+    {
+        $order_no = rawurlencode((string) $order_no);
+        return $this->request('POST', '/v1/test/orders/' . $order_no . '/simulate-expired');
+    }
+
+    /**
+     * Sandbox: 模拟订单失败
+     */
+    public function simulate_order_failed($order_no)
+    {
+        $order_no = rawurlencode((string) $order_no);
+        return $this->request('POST', '/v1/test/orders/' . $order_no . '/simulate-failed');
+    }
+
+    /**
      * 核心：已签名请求
      */
     public function request($method, $path, array $body = [], array $query = [], array $extra_headers = [])

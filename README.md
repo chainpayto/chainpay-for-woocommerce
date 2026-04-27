@@ -8,15 +8,18 @@ WooCommerce payment gateway plugin that accepts USDT/USDC via [ChainPay](https:/
 
 ```
 chainpay-for-woocommerce/
-├── chainpay-for-woocommerce.php   ← plugin bootstrap
+├── chainpay-for-woocommerce.php   ← plugin bootstrap, asset enqueue
 ├── readme.txt                     ← WP.org listing
 ├── README.md                      ← this file
 ├── includes/
-│   ├── class-chainpay-api-client.php     ← signed HTTP client (HMAC-SHA256)
-│   ├── class-wc-gateway-chainpay.php     ← WC_Payment_Gateway subclass + admin settings
-│   └── class-chainpay-webhook-handler.php ← /?wc-api=chainpay_webhook handler
+│   ├── class-chainpay-api-client.php     ← signed HTTP client (HMAC-SHA256, simulate-* helpers)
+│   ├── class-wc-gateway-chainpay.php     ← WC_Payment_Gateway subclass + admin settings + mode badge
+│   ├── class-chainpay-webhook-handler.php ← /?wc-api=chainpay_webhook handler + last-webhook transient
+│   └── class-chainpay-test-runner.php    ← admin-ajax routes for "Run end-to-end test"
 ├── assets/
-│   └── chainpay-logo.svg                 ← gateway icon (24px wide at checkout)
+│   ├── chainpay-logo.svg                 ← gateway icon (24px wide at checkout)
+│   └── js/
+│       └── admin-test.js                 ← jQuery progress UI + webhook polling
 └── languages/
     ├── chainpay-for-woocommerce.pot      ← strings template (to regenerate)
     └── chainpay-for-woocommerce-zh_CN.po ← Simplified Chinese
@@ -45,6 +48,33 @@ Critical design choices:
 * **Signature exactly matches backend** — see `ChainPay_API_Client::sign_params()` vs `backend/src/utils/crypto.js::signParams`. Any drift (e.g. trimming empty strings) breaks auth.
 * **Webhook verifies raw body** — never `json_decode`/`json_encode` before verifying, or field order may change.
 * **HPOS compatible** — declares `custom_order_tables` support for WooCommerce 7.1+.
+* **Mode auto-detection** — the gateway detects `cp_live_` / `cp_test_` prefix at runtime (`get_key_mode()`) and automatically routes orders to live / sandbox / live_test. No global "test mode" toggle that's easy to leave on by accident.
+
+## Sandbox / Live Test integration
+
+See [`docs/SANDBOX_DESIGN.md`](../../../docs/SANDBOX_DESIGN.md) in the repo root for the full design.
+
+The plugin supports all three modes the platform offers:
+
+| Order mode  | Triggered when                                                        | On-chain | Fees |
+|-------------|-----------------------------------------------------------------------|----------|------|
+| `live`      | `api_key` starts with `cp_live_`                                      | Yes      | Std  |
+| `sandbox`   | `api_key` starts with `cp_test_`, **Real-chain 0-fee test** unchecked | No       | 0    |
+| `live_test` | `api_key` starts with `cp_test_`, checkbox checked, admin approved    | Yes      | 0    |
+
+`process_payment()` reads `get_effective_order_mode()` and only adds `realChain: true` to the create-order body when `live_test` is the resolved mode.
+
+### Self-test endpoint flow
+
+`includes/class-chainpay-test-runner.php` exposes three admin-ajax actions (all gated by `manage_woocommerce` + nonce, and **refuse** `cp_live_` keys to prevent abuse):
+
+```
+admin-ajax.php?action=chainpay_test_create     → POST /v1/orders          (force sandbox)
+admin-ajax.php?action=chainpay_test_simulate   → POST /v1/test/orders/:no/simulate-paid
+admin-ajax.php?action=chainpay_test_check      → reads transient set by webhook handler
+```
+
+The webhook handler writes `chainpay_last_webhook` transient on each verified webhook; the check endpoint compares its `merchant_order_no` against the self-test order, plus a `received_at >= started_at` guard to ignore stale records.
 
 ## Local dev
 
@@ -59,9 +89,10 @@ Critical design choices:
 ```bash
 # From repo root
 cd packages/wordpress-plugin
-zip -r chainpay-for-woocommerce-0.1.0.zip chainpay-for-woocommerce \
+zip -r chainpay-for-woocommerce-0.2.0.zip chainpay-for-woocommerce \
   -x 'chainpay-for-woocommerce/.DS_Store' \
-  -x 'chainpay-for-woocommerce/README.md'
+  -x 'chainpay-for-woocommerce/README.md' \
+  -x 'chainpay-for-woocommerce/README.zh-CN.md'
 ```
 
 ## Roadmap
